@@ -1,0 +1,97 @@
+{
+  "name": "@fourlyn/apple-foundation-models",
+  "version": "0.1.0",
+  "description": "The complete TypeScript/Expo SDK for Apple Foundation Models: on-device and Private Cloud Compute LLMs, streaming, structured output, tools, images, dynamic profiles and transcripts.",
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "react-native": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "react-native": "./src/index.ts",
+      "default": "./build/index.js"
+    },
+    "./react": {
+      "types": "./build/react/index.d.ts",
+      "react-native": "./src/react/index.ts",
+      "default": "./build/react/index.js"
+    },
+    "./app.plugin.js": "./app.plugin.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "build",
+    "src",
+    "ios",
+    "plugin/build",
+    "app.plugin.js",
+    "expo-module.config.json",
+    "AGENTS.md",
+    "llms.txt",
+    "docs",
+    "!**/__tests__",
+    "!**/*.test.ts"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsc -p plugin/tsconfig.json",
+    "clean": "rm -rf build plugin/build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "react-native",
+    "expo",
+    "apple-intelligence",
+    "foundation-models",
+    "llm",
+    "on-device-ai",
+    "private-cloud-compute",
+    "ios"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fourlyn/apple-foundation-models.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fourlyn/apple-foundation-models/issues"
+  },
+  "homepage": "https://github.com/fourlyn/apple-foundation-models#readme",
+  "author": "Fourlyn",
+  "license": "MIT",
+  "peerDependencies": {
+    "expo": ">=55.0.0",
+    "react": "*",
+    "react-native": "*",
+    "zod": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@expo/config-plugins": "~57.0.9",
+    "@types/jest": "^29.5.14",
+    "@types/react": "~19.2.2",
+    "expo": "~57.0.25",
+    "jest": "^29.7.0",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "ts-jest": "^29.4.0",
+    "typescript": "~5.9.3",
+    "zod": "^4.1.0"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "roots": [
+      "<rootDir>/src"
+    ],
+    "moduleNameMapper": {
+      "^expo$": "<rootDir>/test-stubs/expo.ts",
+      "^react-native$": "<rootDir>/test-stubs/react-native.ts"
+    }
+  }
+}
