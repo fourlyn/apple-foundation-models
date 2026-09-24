@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Foundation Models Lab",
+    "slug": "apple-foundation-models-example",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.fourlyn.foundationmodelslab"
+    },
+    "plugins": [
+      [
+        "@fourlyn/apple-foundation-models",
+        {}
+      ]
+    ]
+  }
+}
