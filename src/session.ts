@@ -1,16 +1,29 @@
 import { AppleFoundationModelsError, cancelledError } from './errors';
 import { Channel } from './internal/channel';
 import { nextRequestId, registerSession, registerStream } from './internal/events';
-import { requireNative, unwrap, type NativeAppleFoundationModels, type NativeResult, type NativeSessionHandle, type NativeToolCallEvent, type NativeProfileEvent } from './native';
+import {
+  requireNative,
+  unwrap,
+  type NativeAppleFoundationModels,
+  type NativeHistoryTransformEvent,
+  type NativeProfileEvent,
+  type NativeResult,
+  type NativeSessionHandle,
+  type NativeToolCallEvent,
+} from './native';
 import { resolveSchema, type ResolvedSchema } from './schema/normalize';
 import type { InferSchema, SchemaInput } from './schema/types';
 import { prepareTools, type PreparedTool } from './tools';
 import { convertEntries, convertEntry, transcriptJSON, type Transcript } from './transcript';
 import type {
+  AdvancedRequest,
+  AdvancedResponse,
+  AdvancedStreamChunk,
   DeepPartial,
   FeedbackInput,
   FunctionTool,
   GenerationOptions,
+  HistoryTransform,
   ObjectResponse,
   ObjectStreamChunk,
   ProfileEvent,
@@ -18,6 +31,7 @@ import type {
   ResolvedModelKind,
   Response,
   RespondOptions,
+  SessionMessage,
   SessionOptions,
   SessionState,
   StreamChunk,
@@ -71,6 +85,22 @@ function pickGenerationOptions(options: object | undefined): Record<string, unkn
   return result;
 }
 
+/** The object type of an advanced request: inferred from its schema, `undefined` for plain text. */
+type AdvancedObject<S> = S extends SchemaInput<any> ? InferSchema<S> : undefined;
+
+/** Flattens an advanced request into the options shape shared with `respond()`. */
+function advancedOptions(request: AdvancedRequest<unknown>): RespondOptions {
+  return { ...request.options, ...request.contextOptions, metadata: request.metadata, signal: request.signal };
+}
+
+function nativeMessage(message: SessionMessage): Record<string, unknown> {
+  if (message.role !== 'toolCalls') return message;
+  return {
+    role: 'toolCalls',
+    calls: message.calls.map((call) => ({ id: call.id, toolName: call.toolName, argumentsJSON: JSON.stringify(call.arguments ?? {}) })),
+  };
+}
+
 function parseJSON(value: string | undefined): unknown {
   if (value === undefined) return undefined;
   try {
@@ -105,6 +135,8 @@ export class Session {
   readonly id: string;
   /** The model actually used (relevant for `model: 'auto'`). */
   readonly model: ResolvedModelKind;
+  /** Context window of the session's model in tokens, or `null` when it cannot be determined. */
+  readonly contextSize: number | null;
 
   private handle: NativeSessionHandle | null;
   private readonly native: NativeAppleFoundationModels;
@@ -116,16 +148,28 @@ export class Session {
     profile: new Set(),
   };
   private readonly requestControllers = new Map<string, AbortController>();
+  private readonly historyTransforms: Map<string, HistoryTransform>;
   private readonly queueRequests: boolean;
   private queue: Promise<unknown> = Promise.resolve();
   private unregister: () => void;
 
   /** @internal Use `createSession()`. */
-  constructor(internal: { native: NativeAppleFoundationModels; handle: NativeSessionHandle; id: string; model: ResolvedModelKind; tools: PreparedTool[]; queueRequests: boolean }) {
+  constructor(internal: {
+    native: NativeAppleFoundationModels;
+    handle: NativeSessionHandle;
+    id: string;
+    model: ResolvedModelKind;
+    contextSize: number | null;
+    tools: PreparedTool[];
+    historyTransforms: Map<string, HistoryTransform>;
+    queueRequests: boolean;
+  }) {
     this.native = internal.native;
     this.handle = internal.handle;
     this.id = internal.id;
     this.model = internal.model;
+    this.contextSize = internal.contextSize;
+    this.historyTransforms = internal.historyTransforms;
     this.queueRequests = internal.queueRequests;
     for (const prepared of internal.tools) {
       if (prepared.js) this.tools.set(prepared.js.tool.name, prepared.js);
@@ -133,6 +177,7 @@ export class Session {
     this.unregister = registerSession(this.id, {
       onToolCall: (event) => void this.handleToolCall(event),
       onProfileEvent: (event) => this.handleProfileEvent(event),
+      onHistoryTransform: (event) => void this.handleHistoryTransform(event),
     });
   }
 
@@ -140,16 +185,33 @@ export class Session {
   static async create(options: SessionOptions = {}): Promise<Session> {
     const native = requireNative();
     const tools = prepareTools(options.tools);
+    if (options.transcript && options.messages) {
+      throw new AppleFoundationModelsError({ code: 'INVALID_ARGUMENT', message: 'Pass either `transcript` or `messages`, not both.' });
+    }
+    // Functions cannot cross the bridge: native only learns that a callback exists.
+    const historyTransforms = new Map<string, HistoryTransform>();
+    for (const [name, profile] of Object.entries(options.profiles ?? {})) {
+      if (profile.historyTransform === undefined) continue;
+      if (typeof profile.historyTransform !== 'function') {
+        throw new AppleFoundationModelsError({ code: 'INVALID_ARGUMENT', message: `Profile "${name}": historyTransform must be a function.` });
+      }
+      historyTransforms.set(name, profile.historyTransform);
+    }
     const config = {
       instructions: options.instructions,
       model: options.model,
       tools: tools.map((tool) => tool.descriptor),
       transcriptJSON: options.transcript ? transcriptJSON(options.transcript) : undefined,
+      messages: options.messages?.map(nativeMessage),
       profiles: options.profiles
         ? Object.fromEntries(
             Object.entries(options.profiles).map(([name, profile]) => [
               name,
-              { ...profile, toolCallingMode: profile.requiredToolCalls !== undefined ? 'required' : profile.toolCallingMode },
+              {
+                ...profile,
+                toolCallingMode: profile.requiredToolCalls !== undefined ? 'required' : profile.toolCallingMode,
+                historyTransform: historyTransforms.has(name),
+              },
             ]),
           )
         : undefined,
@@ -157,7 +219,7 @@ export class Session {
       transcriptErrorHandling: options.transcriptErrorHandling,
     };
     const handle = native.createNativeSession();
-    let configured: { sessionId: string; model: ResolvedModelKind };
+    let configured: { sessionId: string; model: ResolvedModelKind; contextSize?: number | null };
     try {
       configured = unwrap(await native.configureSession(handle, JSON.stringify(config)));
     } catch (error) {
@@ -169,7 +231,9 @@ export class Session {
       handle,
       id: configured.sessionId,
       model: configured.model,
+      contextSize: configured.contextSize ?? null,
       tools,
+      historyTransforms,
       queueRequests: options.queueRequests ?? true,
     });
     if (options.prewarm) {
@@ -271,6 +335,77 @@ export class Session {
   }
 
   // ---------------------------------------------------------------------------
+  // Advanced API
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The full form of `respond()`: one request object mirroring Apple's
+   * `respond(to:schema:options:contextOptions:metadata:)`, returning everything Apple returns.
+   * With a `schema` the response carries a typed `object`; without one, `text`.
+   *
+   * ```ts
+   * const r = await session.respondAdvanced({
+   *   prompt: 'Extract: Ada, 36',
+   *   schema: Person,
+   *   options: { temperature: 0, samplingMode: { type: 'greedy' } },
+   *   contextOptions: { reasoningLevel: 'deep', includeSchemaInPrompt: false },
+   * });
+   * r.object; r.rawContent; r.usage; r.transcriptEntries; r.durationMs;
+   * ```
+   */
+  async respondAdvanced<S extends SchemaInput<any> | undefined = undefined>(request: AdvancedRequest<S>): Promise<AdvancedResponse<AdvancedObject<S>>> {
+    const started = Date.now();
+    const schema = request.schema ? (resolveSchema(request.schema) as ResolvedSchema<AdvancedObject<S>>) : undefined;
+    const raw = await this.run({ prompt: request.prompt, images: request.images }, advancedOptions(request), schema, request.schemaName);
+    return this.toAdvancedResponse(raw, schema, request.validate ?? true, started);
+  }
+
+  /**
+   * The streaming form of `respondAdvanced()`. Maps to
+   * `streamResponse(to:schema:options:contextOptions:metadata:)`. Each chunk carries the text so far
+   * and, for structured requests, the partial object.
+   */
+  streamAdvanced<S extends SchemaInput<any> | undefined = undefined>(
+    request: AdvancedRequest<S>,
+  ): ResponseStream<AdvancedStreamChunk<AdvancedObject<S>>, AdvancedResponse<AdvancedObject<S>>> {
+    type T = AdvancedObject<S>;
+    const started = Date.now();
+    const schema = request.schema ? (resolveSchema(request.schema) as ResolvedSchema<T>) : undefined;
+    return this.startStream<AdvancedStreamChunk<T>, AdvancedResponse<T>>(
+      { prompt: request.prompt, images: request.images },
+      advancedOptions(request),
+      schema,
+      request.schemaName,
+      (event) => {
+        if (!schema) {
+          const text = event.text ?? '';
+          return { text, delta: event.delta ?? null, replaced: event.replaced === true, partial: undefined, rawContent: text, isComplete: false, isFinal: false };
+        }
+        const partial = parseJSON(event.json);
+        return {
+          text: event.json ?? '',
+          delta: null,
+          replaced: false,
+          partial: partial as DeepPartial<T>,
+          rawContent: partial,
+          isComplete: event.isComplete === true,
+          isFinal: false,
+        };
+      },
+      (raw) => this.toAdvancedResponse(raw, schema, request.validate ?? true, started),
+      (final) => ({
+        text: final.text,
+        delta: schema ? null : '',
+        replaced: false,
+        partial: final.object as DeepPartial<T> | undefined,
+        rawContent: final.rawContent,
+        isComplete: true,
+        isFinal: true,
+      }),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Session management
   // ---------------------------------------------------------------------------
 
@@ -286,6 +421,16 @@ export class Session {
   /** Current transcript. Persist `transcript.json` to restore with `createSession({ transcript })`. */
   async getTranscript(): Promise<Transcript> {
     const raw = unwrap(await this.native.getTranscript(this.requireHandle()));
+    return { entries: convertEntries(raw.entries), json: raw.json ?? '' };
+  }
+
+  /**
+   * Synchronous snapshot of the transcript. Maps to `LanguageModelSession.transcript`.
+   * Encodes the whole conversation on every read: read it once and keep the result,
+   * or use `getTranscript()` to stay off the JS thread.
+   */
+  get transcript(): Transcript {
+    const raw = unwrap(this.native.getTranscriptSync(this.requireHandle()));
     return { entries: convertEntries(raw.entries), json: raw.json ?? '' };
   }
 
@@ -414,7 +559,8 @@ export class Session {
       cancelled = true;
       this.requestControllers.get(requestId)?.abort();
       if (started && this.handle) this.native.cancelRequest(this.handle, requestId);
-      if (!started) channel.fail(cancelledError());
+      // Stop the consumer right away; the queue still waits for native to wind down.
+      fail(cancelledError());
     };
 
     const channel = new Channel<Chunk>(cancel);
@@ -505,6 +651,27 @@ export class Session {
     };
   }
 
+  private async toAdvancedResponse<T>(raw: NativeResult, schema: ResolvedSchema<T> | undefined, validate: boolean, started: number): Promise<AdvancedResponse<T>> {
+    const base = {
+      usage: (raw.usage as Usage | null) ?? null,
+      transcriptEntries: convertEntries(raw.transcriptEntries),
+      model: this.model,
+      durationMs: Date.now() - started,
+    };
+    if (!schema) {
+      const text = raw.text ?? '';
+      return { ...base, text, object: undefined as T, rawContent: parseJSON(raw.rawContentJSON) ?? text, isComplete: true };
+    }
+    const content = parseJSON(raw.json);
+    return {
+      ...base,
+      text: raw.json ?? '',
+      object: validate && schema.validate ? await schema.validate(content) : (content as T),
+      rawContent: parseJSON(raw.rawContentJSON) ?? content,
+      isComplete: raw.isComplete ?? true,
+    };
+  }
+
   private emit<K extends keyof SessionEvents>(event: K, payload: SessionEvents[K]): void {
     for (const handler of this.listeners[event]) {
       try {
@@ -540,6 +707,22 @@ export class Session {
       this.native.resolveToolCall(event.callId, null, error.message || 'Tool execution failed.');
       this.emit('toolError', { ...base, error, durationMs: Date.now() - started });
     }
+  }
+
+  /** Native is blocked until `resolveHistoryTransform` is called, so every path must answer. */
+  private async handleHistoryTransform(event: NativeHistoryTransformEvent): Promise<void> {
+    let ids: string[] | null = null;
+    try {
+      const transform = this.historyTransforms.get(event.profile);
+      if (transform) {
+        const kept = await transform(convertEntries(event.entries), { profile: event.profile });
+        if (!Array.isArray(kept)) throw new TypeError('historyTransform must return an array of transcript entries.');
+        ids = kept.map((entry) => entry.id);
+      }
+    } catch (error) {
+      console.error(`[apple-foundation-models] historyTransform for profile "${event.profile}" threw; using the unfiltered history`, error);
+    }
+    this.native.resolveHistoryTransform(event.transformId, ids ? JSON.stringify(ids) : null);
   }
 
   private handleProfileEvent(event: NativeProfileEvent): void {

@@ -224,6 +224,73 @@ export type ObjectStreamChunk<T> = {
 export type DeepPartial<T> = T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T;
 
 // ---------------------------------------------------------------------------
+// Advanced API
+// ---------------------------------------------------------------------------
+
+/** Maps to Apple's `ContextOptions` (iOS 27+). */
+export type ContextOptions = {
+  reasoningLevel?: ReasoningLevel;
+  /** Whether the schema is also described in the prompt. Apple's default is `true`. */
+  includeSchemaInPrompt?: boolean;
+};
+
+/**
+ * One request object mirroring the arguments of Apple's
+ * `respond(to:schema:options:contextOptions:metadata:)`. Used by `session.respondAdvanced()`
+ * and `session.streamAdvanced()`.
+ */
+export type AdvancedRequest<S = undefined> = {
+  prompt: string;
+  /** iOS 27+. */
+  images?: ImageInput[];
+  /** Maps to `GenerationSchema`. Omit for plain text. */
+  schema?: S;
+  /** Name of the root schema. Default `"Response"`. */
+  schemaName?: string;
+  /** Validate the object with the schema's validator (e.g. Zod). Default `true`. */
+  validate?: boolean;
+  /** Maps to `GenerationOptions`. */
+  options?: Pick<GenerationOptions, 'temperature' | 'maximumResponseTokens' | 'samplingMode' | 'toolCallingMode'>;
+  /** Maps to `ContextOptions` (iOS 27+). */
+  contextOptions?: ContextOptions;
+  /** iOS 27+. JSON metadata attached to the prompt transcript entry. */
+  metadata?: Record<string, unknown>;
+  signal?: AbortSignal;
+};
+
+/** Everything Apple returns for a request, plus timing. `T` is `undefined` for plain text. */
+export type AdvancedResponse<T> = {
+  /** The response text. For structured requests, the generated object as JSON. */
+  text: string;
+  /** The generated object (structured requests only). */
+  object: T;
+  /** Apple's `GeneratedContent`, before schema validation. */
+  rawContent: unknown;
+  /** Apple's `GeneratedContent.isComplete`. */
+  isComplete: boolean;
+  usage: Usage | null;
+  transcriptEntries: TranscriptEntry[];
+  /** The model that produced the response. */
+  model: ResolvedModelKind;
+  /** Wall-clock time from the call to the response, including time spent queued. */
+  durationMs: number;
+};
+
+export type AdvancedStreamChunk<T> = {
+  /** The full text so far. For structured requests, the partial object as JSON. */
+  text: string;
+  /** Text appended since the previous chunk. `null` for structured requests and when `replaced` is `true`. */
+  delta: string | null;
+  replaced: boolean;
+  /** The partially generated object (structured requests only). */
+  partial: DeepPartial<T> | undefined;
+  /** Apple's `GeneratedContent` snapshot. */
+  rawContent: unknown;
+  isComplete: boolean;
+  isFinal: boolean;
+};
+
+// ---------------------------------------------------------------------------
 // Tools
 // ---------------------------------------------------------------------------
 
@@ -282,16 +349,33 @@ export type ToolErrorEvent = ToolCallEvent & { error: Error; durationMs: number 
  */
 export type HistoryStrategy = {
   /**
+   * The current turn (latest prompt and its tool calls so far) is always kept.
    * - `all` (default): full history.
-   * - `none`: only instructions.
+   * - `none`: instructions + the current turn only.
    * - `last`: the last `count` entries.
-   * - `lastTurns`: the last `count` prompt/response turns (safer: keeps tool calls with their turn).
+   * - `lastTurns`: the last `count` turns, including the current one (keeps tool calls with their turn).
    */
   strategy: 'all' | 'none' | 'last' | 'lastTurns';
   count?: number;
   dropToolCalls?: boolean;
   dropReasoning?: boolean;
 };
+
+/**
+ * Low-level history callback. Maps to `DynamicProfile.historyTransform`.
+ *
+ * Receives the entries the model is about to see (after the profile's `history` strategy)
+ * and returns the ones to keep. It can only **filter**: entries are matched by `id`, keep
+ * their original order, and new entries are ignored. The instructions and the in-flight
+ * turn (the latest prompt and its tool calls) are always kept.
+ *
+ * Native code waits for the answer, so return quickly (within 2 seconds): if the callback
+ * is slower or throws, the `history` strategy result is used unchanged.
+ */
+export type HistoryTransform = (
+  entries: TranscriptEntry[],
+  context: { profile: string },
+) => TranscriptEntry[] | Promise<TranscriptEntry[]>;
 
 export type ProfileConfig = GenerationOptions & {
   /** Instructions for this profile. Defaults to the session's `instructions`. */
@@ -300,6 +384,8 @@ export type ProfileConfig = GenerationOptions & {
   tools?: string[];
   model?: ModelSelector;
   history?: HistoryStrategy;
+  /** Custom filter over the history, run after `history`. See `HistoryTransform`. */
+  historyTransform?: HistoryTransform;
   /**
    * Exit strategy for `toolCallingMode: 'required'`: after this many tool calls in a turn,
    * the mode switches to `allowed` so the model can answer. Setting it implies `required`.
@@ -320,12 +406,26 @@ export type ProfileEvent = {
 // Sessions
 // ---------------------------------------------------------------------------
 
+/**
+ * A plain message used to seed a session with a conversation that did not come from a saved
+ * Apple transcript (e.g. chat history kept by another library). See `SessionOptions.messages`.
+ */
+export type SessionMessage =
+  | { role: 'user' | 'assistant'; content: string }
+  | { role: 'toolCalls'; calls: { id: string; toolName: string; arguments: unknown }[] }
+  | { role: 'toolOutput'; id: string; toolName: string; content: string };
+
 export type SessionOptions = {
   instructions?: string;
   model?: ModelSelector;
   tools?: Tool[];
   /** Restore a conversation saved with `session.getTranscript()`. */
   transcript?: Transcript | string;
+  /**
+   * Start from an existing conversation given as plain messages. Prefer `transcript` when you
+   * have one: it is lossless. Cannot be combined with `transcript`.
+   */
+  messages?: SessionMessage[];
   /** iOS 27+. Named profiles; switch with `session.setProfile(name)`. */
   profiles?: Record<string, ProfileConfig>;
   /** Profile active at start. Default: the first declared profile. */
@@ -406,6 +506,8 @@ export type Diagnostics = {
   platform: string;
   osVersion: string | null;
   deviceModel?: string;
+  /** `true` in the iOS Simulator, where some model assets (tool calling, vision) may be unavailable. */
+  isSimulator?: boolean;
   packageVersion: string;
   build: { foundationModelsSDK: boolean; ios26_4SDK: boolean; ios27SDK: boolean } | null;
   foundationModelsSupported: boolean;

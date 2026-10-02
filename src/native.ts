@@ -30,6 +30,13 @@ export type NativeProfileEvent = {
   argumentsJSON?: string;
 };
 
+export type NativeHistoryTransformEvent = {
+  sessionId: string;
+  transformId: string;
+  profile: string;
+  entries: Record<string, unknown>[];
+};
+
 export type NativeResult = {
   text?: string;
   json?: string;
@@ -50,19 +57,25 @@ export interface NativeAppleFoundationModels {
   getDiagnostics(): Promise<Envelope<Record<string, unknown>>>;
   resolveToolCall(callId: string, resultJSON: string | null, errorMessage: string | null): boolean;
   createNativeSession(): NativeSessionHandle;
-  configureSession(session: NativeSessionHandle, configJSON: string): Promise<Envelope<{ sessionId: string; model: 'system' | 'privateCloudCompute' }>>;
+  resolveHistoryTransform(transformId: string, idsJSON: string | null): boolean;
+  configureSession(
+    session: NativeSessionHandle,
+    configJSON: string,
+  ): Promise<Envelope<{ sessionId: string; model: 'system' | 'privateCloudCompute'; contextSize?: number | null }>>;
   respond(session: NativeSessionHandle, requestId: string, payloadJSON: string): Promise<Envelope<NativeResult>>;
   startStream(session: NativeSessionHandle, requestId: string, payloadJSON: string): Envelope<string>;
   cancelRequest(session: NativeSessionHandle, requestId: string): void;
   prewarm(session: NativeSessionHandle, promptPrefix: string | null): Promise<Envelope<boolean>>;
   getSessionState(session: NativeSessionHandle): Envelope<Record<string, unknown>>;
   getTranscript(session: NativeSessionHandle): Promise<Envelope<{ entries: Record<string, unknown>[]; json: string | null }>>;
+  getTranscriptSync(session: NativeSessionHandle): Envelope<{ entries: Record<string, unknown>[]; json: string | null }>;
   setActiveProfile(session: NativeSessionHandle, name: string): Envelope<string>;
   createFeedbackAttachment(session: NativeSessionHandle, payloadJSON: string): Promise<Envelope<string>>;
   disposeSession(session: NativeSessionHandle): void;
   addListener(event: 'onToolCall', listener: (event: NativeToolCallEvent) => void): Subscription;
   addListener(event: 'onStreamEvent', listener: (event: NativeStreamEvent) => void): Subscription;
   addListener(event: 'onProfileEvent', listener: (event: NativeProfileEvent) => void): Subscription;
+  addListener(event: 'onHistoryTransform', listener: (event: NativeHistoryTransformEvent) => void): Subscription;
 }
 
 let cached: NativeAppleFoundationModels | null | undefined;

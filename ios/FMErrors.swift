@@ -28,16 +28,45 @@ enum FMErrorMapper {
     #endif
 
     let nsError = error as NSError
-    return make(
-      "UNKNOWN",
-      error.localizedDescription,
-      String(describing: type(of: error)),
-      ["domain": nsError.domain, "nativeCode": nsError.code, "debugDescription": String(describing: error)]
-    )
+    var details: [String: Any] = [
+      "domain": nsError.domain,
+      "nativeCode": nsError.code,
+      "debugDescription": String(describing: error),
+    ]
+    if !nsError.userInfo.isEmpty {
+      details["userInfo"] = nsError.userInfo.mapValues { String(describing: $0) }
+    }
+    var underlying: [NSError] = []
+    if let single = nsError.userInfo[NSUnderlyingErrorKey] as? NSError { underlying.append(single) }
+    if let multiple = nsError.userInfo[NSMultipleUnderlyingErrorsKey] as? [NSError] { underlying.append(contentsOf: multiple) }
+    if !underlying.isEmpty {
+      details["underlyingErrors"] = underlying.map { ["domain": $0.domain, "code": $0.code, "description": $0.localizedDescription] }
+    }
+    // Model assets missing or still downloading (e.g. tool-calling or vision assets on some simulators).
+    let isAssetError: (NSError) -> Bool = { $0.domain.contains("ModelManager") || $0.domain.contains("UnifiedAssetFramework") }
+    if isAssetError(nsError) || underlying.contains(where: isAssetError) {
+      return make("MODEL_NOT_READY", error.localizedDescription, nsError.domain, details)
+    }
+    // Apple has no dedicated "missing entitlement" error; recognise it from the error text.
+    if mentionsEntitlement(error.localizedDescription, String(describing: error), nsError.domain) {
+      details["reason"] = "ENTITLEMENT_REQUIRED"
+      return make("ENTITLEMENT_REQUIRED", error.localizedDescription, nsError.domain, details)
+    }
+    // Framework errors that arrive bridged as NSError (not castable to the Swift enum).
+    if nsError.domain.hasPrefix("FoundationModels") {
+      return make("GENERATION_FAILED", error.localizedDescription, nsError.domain, details)
+    }
+    return make("UNKNOWN", error.localizedDescription, String(describing: type(of: error)), details)
   }
 
   static func make(_ code: String, _ message: String, _ nativeType: String, _ details: [String: Any] = [:]) -> [String: Any] {
     ["code": code, "message": message, "nativeType": nativeType, "details": details]
+  }
+
+  /// Whether any of the texts says an entitlement is missing. Apple reports a missing
+  /// Private Cloud Compute entitlement only through error descriptions, so this is a heuristic.
+  static func mentionsEntitlement(_ texts: String...) -> Bool {
+    texts.contains { $0.range(of: "entitle", options: .caseInsensitive) != nil }
   }
 
   #if canImport(FoundationModels)
@@ -174,12 +203,17 @@ enum FMErrorMapper {
           "debugDescription": info.debugDescription,
         ])
       case .serviceUnavailable(let info):
+        let entitlement = mentionsEntitlement(info.debugDescription, error.localizedDescription)
         return make("PRIVATE_CLOUD_COMPUTE_UNAVAILABLE", error.localizedDescription, type, [
-          "reason": "SERVICE_UNAVAILABLE",
+          "reason": entitlement ? "ENTITLEMENT_REQUIRED" : "SERVICE_UNAVAILABLE",
           "debugDescription": info.debugDescription,
         ])
       @unknown default:
-        return make("PRIVATE_CLOUD_COMPUTE_UNAVAILABLE", error.localizedDescription, type)
+        let description = String(describing: error)
+        return make("PRIVATE_CLOUD_COMPUTE_UNAVAILABLE", error.localizedDescription, type, [
+          "reason": mentionsEntitlement(description, error.localizedDescription) ? "ENTITLEMENT_REQUIRED" : "UNKNOWN",
+          "debugDescription": description,
+        ])
       }
     }
 

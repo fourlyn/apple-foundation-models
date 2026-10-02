@@ -1,8 +1,9 @@
-import { getNativeModule, type NativeProfileEvent, type NativeStreamEvent, type NativeToolCallEvent } from '../native';
+import { getNativeModule, type NativeHistoryTransformEvent, type NativeProfileEvent, type NativeStreamEvent, type NativeToolCallEvent } from '../native';
 
 type SessionListener = {
   onToolCall(event: NativeToolCallEvent): void;
   onProfileEvent(event: NativeProfileEvent): void;
+  onHistoryTransform(event: NativeHistoryTransformEvent): void;
 };
 
 const sessions = new Map<string, SessionListener>();
@@ -29,6 +30,15 @@ function ensureSubscribed(): void {
   });
   native.addListener('onStreamEvent', (event) => streams.get(event.requestId)?.(event));
   native.addListener('onProfileEvent', (event) => sessions.get(event.sessionId)?.onProfileEvent(event));
+  native.addListener('onHistoryTransform', (event) => {
+    const session = sessions.get(event.sessionId);
+    if (session) {
+      session.onHistoryTransform(event);
+    } else {
+      // Native is blocked waiting for the answer: release it so it uses its own result.
+      native.resolveHistoryTransform(event.transformId, null);
+    }
+  });
 }
 
 export function registerSession(sessionId: string, listener: SessionListener): () => void {
@@ -47,4 +57,11 @@ let counter = 0;
 export function nextRequestId(): string {
   counter += 1;
   return `req_${Date.now().toString(36)}_${counter.toString(36)}`;
+}
+
+/** Test hook: forget subscriptions so a new fake native module can be used. */
+export function __resetEventsForTesting(): void {
+  subscribed = false;
+  sessions.clear();
+  streams.clear();
 }

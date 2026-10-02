@@ -10,8 +10,8 @@ extension SessionPropertyValues {
   @SessionPropertyEntry var fourlynToolCallCount: Int = 0
 }
 
-/// Declarative history strategies (a JS function cannot run synchronously inside
-/// Apple's `historyTransform`, so the common strategies are implemented natively).
+/// Declarative history strategies, implemented natively so they cost no bridge round trip.
+/// A JavaScript `historyTransform` callback runs after them (see `FMHistoryTransformBroker`).
 @available(iOS 27.0, *)
 struct FMHistoryStrategy {
   enum Kind { case all, none, lastEntries(Int), lastTurns(Int) }
@@ -50,10 +50,17 @@ struct FMHistoryStrategy {
       return false
     }
     let instructions = entries.filter(isInstructions)
-    var rest = entries.filter { !isInstructions($0) }
+    let all = entries.filter { !isInstructions($0) }
 
+    // Apple passes the in-flight turn (the latest prompt, plus any tool calls/outputs so far) at the end
+    // of the history, and the transcript must end with a prompt or tool output. It is always kept intact.
+    let split = all.lastIndex(where: {
+      if case .prompt = $0 { return true }
+      return false
+    }) ?? all.count
+    var earlier = Array(all[..<split])
     if dropToolCalls || dropReasoning {
-      rest = rest.filter { entry in
+      earlier = earlier.filter { entry in
         switch entry {
         case .toolCalls, .toolOutput: return !dropToolCalls
         case .reasoning: return !dropReasoning
@@ -61,27 +68,28 @@ struct FMHistoryStrategy {
         }
       }
     }
+    var rest = earlier + all[split...]
+    let currentTurnStart = earlier.count
 
     switch kind {
     case .all:
       break
     case .none:
-      rest = []
+      rest = Array(rest[currentTurnStart...])
     case .lastEntries(let count):
-      rest = Array(rest.suffix(count))
+      let keep = max(count, rest.count - currentTurnStart)
+      rest = Array(rest.suffix(keep))
       // Never start the window with a dangling tool output.
       while let first = rest.first, case .toolOutput = first { rest.removeFirst() }
     case .lastTurns(let count):
-      if count == 0 {
-        rest = []
-      } else {
-        let promptIndices = rest.indices.filter {
-          if case .prompt = rest[$0] { return true }
-          return false
-        }
-        if promptIndices.count > count {
-          rest = Array(rest[promptIndices[promptIndices.count - count]...])
-        }
+      // `count` includes the current turn.
+      let promptIndices = rest.indices.filter {
+        if case .prompt = rest[$0] { return true }
+        return false
+      }
+      let turns = max(count, 1)
+      if promptIndices.count > turns {
+        rest = Array(rest[promptIndices[promptIndices.count - turns]...])
       }
     }
     return instructions + rest
@@ -103,18 +111,34 @@ final class FMProfileRegistry: @unchecked Sendable {
     /// the mode switches to `allowed` so the model can produce a final answer.
     var requiredToolCalls: Int?
     var history: FMHistoryStrategy
+    /// Whether JavaScript registered a `historyTransform` callback for this profile.
+    var customHistory = false
   }
 
   let configs: [String: Config]
   let initial: String
   let sessionId: String
   let emit: ([String: Any]) -> Void
+  weak var historyBroker: FMHistoryTransformBroker?
 
-  init(configs: [String: Config], initial: String, sessionId: String, emit: @escaping ([String: Any]) -> Void) {
+  init(configs: [String: Config], initial: String, sessionId: String, emit: @escaping ([String: Any]) -> Void, historyBroker: FMHistoryTransformBroker?) {
     self.configs = configs
     self.initial = initial
     self.sessionId = sessionId
     self.emit = emit
+    self.historyBroker = historyBroker
+  }
+
+  /// Runs the profile's history strategy, then its JavaScript `historyTransform` (if any).
+  /// If JavaScript does not answer in time, the strategy result is used.
+  func history(for name: String, _ entries: [Transcript.Entry]) -> [Transcript.Entry] {
+    let config = config(name)
+    let base = config.history.apply(entries)
+    guard config.customHistory,
+          let ids = historyBroker?.request(sessionId: sessionId, profile: name, entries: FMTranscriptConverter.entries(base)) else {
+      return base
+    }
+    return FMHistorySelection.select(base, keeping: ids)
   }
 
   func resolveName(_ active: String) -> String {
@@ -145,7 +169,6 @@ struct FMDynamicProfile: LanguageModelSession.DynamicProfile {
     let registry = self.registry
     let name = registry.resolveName(activeProfile)
     let config = registry.config(name)
-    let history = config.history
     let toolCallingMode: GenerationOptions.ToolCallingMode? = config.requiredToolCalls.map {
       toolCallCount < $0 ? .required : .allowed
     } ?? config.toolCallingMode
@@ -160,7 +183,7 @@ struct FMDynamicProfile: LanguageModelSession.DynamicProfile {
     .maximumResponseTokens(config.maximumResponseTokens)
     .reasoningLevel(config.reasoningLevel)
     .toolCallingMode(toolCallingMode)
-    .historyTransform { entries in history.apply(entries) }
+    .historyTransform { entries in registry.history(for: name, entries) }
     .onActivate { registry.send(name, "activate") }
     .onDeactivate { registry.send(name, "deactivate") }
     .onPrompt { prompt in
@@ -189,7 +212,8 @@ enum FMProfiles {
     allTools: [any Tool],
     history: [Transcript.Entry],
     sessionId: String,
-    emit: @escaping ([String: Any]) -> Void
+    emit: @escaping ([String: Any]) -> Void,
+    historyBroker: FMHistoryTransformBroker?
   ) throws -> LanguageModelSession {
     var configs: [String: FMProfileRegistry.Config] = [:]
     for (name, value) in profiles {
@@ -218,14 +242,15 @@ enum FMProfiles {
         reasoningLevel: try FMOptionsParser.reasoningLevel(reasoningName, custom: object.object("reasoningLevel")?.string("custom")),
         toolCallingMode: options.toolCallingMode,
         requiredToolCalls: object.int("requiredToolCalls"),
-        history: try FMHistoryStrategy.parse(object.object("history"))
+        history: try FMHistoryStrategy.parse(object.object("history")),
+        customHistory: object.bool("historyTransform") ?? false
       )
     }
     let initial = initialProfile ?? profiles.keys.sorted().first!
     guard configs[initial] != nil else {
       throw FMBridgeError.invalidArgument("initialProfile '\(initial)' is not one of the declared profiles.")
     }
-    let registry = FMProfileRegistry(configs: configs, initial: initial, sessionId: sessionId, emit: emit)
+    let registry = FMProfileRegistry(configs: configs, initial: initial, sessionId: sessionId, emit: emit, historyBroker: historyBroker)
     let session = LanguageModelSession(profile: FMDynamicProfile(registry: registry), history: history)
     session.properties.fourlynActiveProfile = initial
     return session

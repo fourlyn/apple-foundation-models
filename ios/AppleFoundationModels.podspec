@@ -29,4 +29,6 @@ Pod::Spec.new do |s|
   }
 
   s.source_files = "**/*.{h,m,mm,swift}"
+  # Unit tests run through the Swift package at the repo root, not through the pod.
+  s.exclude_files = "Tests/**/*"
 end

@@ -1,6 +1,5 @@
 import ExpoModulesCore
 import Foundation
-import UIKit
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
@@ -13,20 +12,21 @@ import FoundationModels
 ///   so structured error details survive the bridge. `src/native.ts` unwraps it.
 public final class AppleFoundationModelsModule: Module {
   private let broker = FMToolCallBroker()
+  private let historyBroker = FMHistoryTransformBroker()
 
   public func definition() -> ModuleDefinition {
     Name("AppleFoundationModels")
 
-    Events("onToolCall", "onStreamEvent", "onProfileEvent")
+    Events("onToolCall", "onStreamEvent", "onProfileEvent", "onHistoryTransform")
 
     OnCreate {
-      self.broker.emit = { [weak self] payload in
-        self?.sendEvent("onToolCall", payload)
-      }
+      self.broker.emit = self.emitter("onToolCall")
+      self.historyBroker.emit = self.emitter("onHistoryTransform")
     }
 
     OnDestroy {
       self.broker.cancelAll()
+      self.historyBroker.cancelAll()
     }
 
     Function("getBuildInfo") { () -> [String: Any] in
@@ -34,7 +34,7 @@ public final class AppleFoundationModelsModule: Module {
         "foundationModelsSDK": FMBuildInfo.hasFoundationModelsSDK,
         "ios26_4SDK": FMBuildInfo.hasIOS26_4SDK,
         "ios27SDK": FMBuildInfo.hasIOS27SDK,
-        "osVersion": UIDevice.current.systemVersion,
+        "osVersion": Self.osVersion,
         "platform": "ios",
       ]
     }
@@ -73,11 +73,19 @@ public final class AppleFoundationModelsModule: Module {
       self.broker.resolve(callId: callId, result: FMToolResult(json: resultJSON, errorMessage: errorMessage))
     }
 
+    Function("resolveHistoryTransform") { (transformId: String, idsJSON: String?) -> Bool in
+      self.historyBroker.resolve(id: transformId, idsJSON: idsJSON)
+    }
+
     Function("createNativeSession") { () -> FMSessionObject in
-      FMSessionObject(
+      // Synchronous functions run on the JavaScript thread; remember it so a history
+      // transform never waits for JavaScript on the thread JavaScript runs on.
+      FMHistoryTransformBroker.markJavaScriptThread()
+      return FMSessionObject(
         broker: self.broker,
-        emitStream: { [weak self] payload in self?.sendEvent("onStreamEvent", payload) },
-        emitProfile: { [weak self] payload in self?.sendEvent("onProfileEvent", payload) }
+        historyBroker: self.historyBroker,
+        emitStream: self.emitter("onStreamEvent"),
+        emitProfile: self.emitter("onProfileEvent")
       )
     }
 
@@ -86,7 +94,11 @@ public final class AppleFoundationModelsModule: Module {
         #if canImport(FoundationModels)
         guard #available(iOS 26.0, *) else { throw FMBridgeError.unsupportedOS("Foundation Models", minimum: "26.0") }
         try session.configure(try FMJSON.parseObject(configJSON))
-        return ["sessionId": session.sessionId, "model": session.resolvedModelKind]
+        return [
+          "sessionId": session.sessionId,
+          "model": session.resolvedModelKind,
+          "contextSize": await session.contextSize(),
+        ]
         #else
         throw FMBridgeError.unsupportedSDK("Foundation Models", sdk: "iOS 26")
         #endif
@@ -163,6 +175,17 @@ public final class AppleFoundationModelsModule: Module {
       }
     }
 
+    Function("getTranscriptSync") { (session: FMSessionObject) -> [String: Any] in
+      #if canImport(FoundationModels)
+      guard #available(iOS 26.0, *) else {
+        return FMEnvelope.failure(FMBridgeError.unsupportedOS("Foundation Models", minimum: "26.0"))
+      }
+      do { return FMEnvelope.ok(FMTranscriptConverter.toJS(try session.requireSession().transcript)) } catch { return FMEnvelope.failure(error) }
+      #else
+      return FMEnvelope.failure(FMBridgeError.unsupportedSDK("Foundation Models", sdk: "iOS 26"))
+      #endif
+    }
+
     Function("setActiveProfile") { (session: FMSessionObject, name: String) -> [String: Any] in
       #if canImport(FoundationModels) && compiler(>=6.4)
       guard #available(iOS 27.0, *) else {
@@ -198,6 +221,35 @@ public final class AppleFoundationModelsModule: Module {
     }
 
     Class("NativeSession", FMSessionObject.self) {}
+  }
+
+  private func emitter(_ event: String) -> ([String: Any]) -> Void {
+    { [weak self] payload in self?.sendEvent(event, payload) }
+  }
+
+  private static var isSimulator: Bool {
+    #if targetEnvironment(simulator)
+    return true
+    #else
+    return false
+    #endif
+  }
+
+  private static var osVersion: String {
+    let version = ProcessInfo.processInfo.operatingSystemVersion
+    return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+  }
+
+  /// Hardware identifier such as `iPhone17,1` (the simulator reports the simulated model).
+  private static var deviceModel: String {
+    if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] {
+      return simulated
+    }
+    var info = utsname()
+    uname(&info)
+    return withUnsafeBytes(of: &info.machine) { buffer in
+      String(decoding: buffer.prefix(while: { $0 != 0 }), as: UTF8.self)
+    }
   }
 
   // MARK: - Model-level operations
@@ -321,8 +373,9 @@ public final class AppleFoundationModelsModule: Module {
   private static func diagnostics() async -> [String: Any] {
     var result: [String: Any] = [
       "platform": "ios",
-      "osVersion": UIDevice.current.systemVersion,
-      "deviceModel": UIDevice.current.model,
+      "osVersion": Self.osVersion,
+      "deviceModel": Self.deviceModel,
+      "isSimulator": Self.isSimulator,
       "build": [
         "foundationModelsSDK": FMBuildInfo.hasFoundationModelsSDK,
         "ios26_4SDK": FMBuildInfo.hasIOS26_4SDK,

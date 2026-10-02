@@ -136,6 +136,58 @@ enum FMTranscriptConverter {
     ]
   }
 
+  // MARK: - Building a transcript from plain messages
+
+  /// Builds transcript entries from plain messages, for conversations that did not come from
+  /// a saved Apple transcript (e.g. chat history kept by another library):
+  /// `{ role: "user" | "assistant", content }`,
+  /// `{ role: "toolCalls", calls: [{ id, toolName, argumentsJSON }] }`,
+  /// `{ role: "toolOutput", id, toolName, content }`.
+  static func entries(fromMessages messages: [Any]) throws -> [Transcript.Entry] {
+    try messages.map { value in
+      guard let message = value as? [String: Any], let role = message.string("role") else {
+        throw FMBridgeError.invalidArgument("Each message must be an object with a `role`.")
+      }
+      let text: () throws -> [Transcript.Segment] = {
+        guard let content = message.string("content") else {
+          throw FMBridgeError.invalidArgument("A '\(role)' message needs a string `content`.")
+        }
+        return [.text(Transcript.TextSegment(content: content))]
+      }
+      switch role {
+      case "user":
+        return .prompt(Transcript.Prompt(segments: try text(), options: GenerationOptions(), responseFormat: nil))
+      case "assistant":
+        return .response(Transcript.Response(assetIDs: [], segments: try text()))
+      case "toolCalls":
+        let calls = try (message.array("calls") ?? []).map { value -> Transcript.ToolCall in
+          guard let call = value as? [String: Any], let id = call.string("id"), let toolName = call.string("toolName") else {
+            throw FMBridgeError.invalidArgument("Each tool call needs an `id` and a `toolName`.")
+          }
+          return Transcript.ToolCall(id: id, toolName: toolName, arguments: try GeneratedContent(json: call.string("argumentsJSON") ?? "{}"))
+        }
+        return .toolCalls(Transcript.ToolCalls(calls))
+      case "toolOutput":
+        guard let id = message.string("id"), let toolName = message.string("toolName") else {
+          throw FMBridgeError.invalidArgument("A 'toolOutput' message needs an `id` and a `toolName`.")
+        }
+        return .toolOutput(Transcript.ToolOutput(id: id, toolName: toolName, segments: try text()))
+      default:
+        throw FMBridgeError.invalidArgument("Unknown message role '\(role)'. Use 'user', 'assistant', 'toolCalls' or 'toolOutput'.")
+      }
+    }
+  }
+
+  /// The instructions entry a session would have created itself, so a transcript built from
+  /// plain messages still carries the instructions and tool definitions.
+  static func instructionsEntry(_ instructions: String?, tools: [any Tool]) -> Transcript.Entry? {
+    guard instructions != nil || !tools.isEmpty else { return nil }
+    return .instructions(Transcript.Instructions(
+      segments: instructions.map { [.text(Transcript.TextSegment(content: $0))] } ?? [],
+      toolDefinitions: tools.map { Transcript.ToolDefinition(name: $0.name, description: $0.description, parameters: $0.parameters) }
+    ))
+  }
+
   /// Plain text of the segments (text segments only, structured segments as JSON).
   static func text(of segments: [Transcript.Segment]) -> String {
     segments.compactMap { segment -> String? in

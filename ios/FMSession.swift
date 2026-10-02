@@ -12,11 +12,14 @@ import FoundationModels
 final class FMSessionObject: SharedObject {
   let sessionId = UUID().uuidString
   let broker: FMToolCallBroker
+  let historyBroker: FMHistoryTransformBroker
   let emitStream: ([String: Any]) -> Void
   let emitProfile: ([String: Any]) -> Void
 
   /// `LanguageModelSession` (typed as `AnyObject` so the class compiles on older SDKs).
   var nativeSession: AnyObject?
+  /// The `FMResolvedModel` the session was created with (typed as `Any` for older SDKs).
+  private var resolvedModel: Any?
   var resolvedModelKind = "system"
   var profileNames: [String] = []
 
@@ -24,8 +27,9 @@ final class FMSessionObject: SharedObject {
   private var tasks: [String: Task<Void, Never>] = [:]
   private var runningRequestId: String?
 
-  init(broker: FMToolCallBroker, emitStream: @escaping ([String: Any]) -> Void, emitProfile: @escaping ([String: Any]) -> Void) {
+  init(broker: FMToolCallBroker, historyBroker: FMHistoryTransformBroker, emitStream: @escaping ([String: Any]) -> Void, emitProfile: @escaping ([String: Any]) -> Void) {
     self.broker = broker
+    self.historyBroker = historyBroker
     self.emitStream = emitStream
     self.emitProfile = emitProfile
     super.init()
@@ -76,6 +80,7 @@ final class FMSessionObject: SharedObject {
     register(requestId, task)
     await task.value
     unregister(requestId)
+    await waitUntilIdle()
     return result
   }
 
@@ -84,11 +89,28 @@ final class FMSessionObject: SharedObject {
       do {
         try await body()
       } catch {
+        // Report only once the framework has fully stopped, so the next queued request can't overlap it.
+        await self?.waitUntilIdle()
         self?.emitStream(["requestId": requestId, "type": "error", "error": FMErrorMapper.map(error)])
       }
       self?.unregister(requestId)
     }
     register(requestId, task)
+  }
+
+  /// After a cancellation Apple may still be winding down the generation (`isResponding == true`).
+  /// Starting another request on the session during that window is unsafe, so wait (bounded) for it.
+  /// Runs in a detached task because the calling task is usually already cancelled.
+  func waitUntilIdle(timeout: TimeInterval = 60) async {
+    #if canImport(FoundationModels)
+    guard #available(iOS 26.0, *), let session = nativeSession as? LanguageModelSession, session.isResponding else { return }
+    await Task.detached {
+      let deadline = Date().addingTimeInterval(timeout)
+      while session.isResponding && Date() < deadline {
+        try? await Task.sleep(nanoseconds: 50_000_000)
+      }
+    }.value
+    #endif
   }
 
   #if canImport(FoundationModels)
@@ -106,6 +128,7 @@ final class FMSessionObject: SharedObject {
   func configure(_ config: [String: Any]) throws {
     let spec = try FMModelSpec.parse(config["model"])
     let model = try FMModelResolver.resolve(spec)
+    resolvedModel = model
     resolvedModelKind = model.kindName
 
     let descriptors = try (config.array("tools") ?? []).map(FMToolDescriptor.parse)
@@ -115,8 +138,15 @@ final class FMSessionObject: SharedObject {
     }
 
     var transcript: Transcript?
+    var history: [Transcript.Entry] = []
     if let json = config.string("transcriptJSON") {
-      transcript = try FMTranscriptConverter.decode(json)
+      let decoded = try FMTranscriptConverter.decode(json)
+      transcript = decoded
+      history = Array(decoded)
+    } else if let messages = config.array("messages"), !messages.isEmpty {
+      history = try FMTranscriptConverter.entries(fromMessages: messages)
+      let instructions = FMTranscriptConverter.instructionsEntry(config.string("instructions"), tools: tools)
+      transcript = Transcript(entries: (instructions.map { [$0] } ?? []) + history)
     }
 
     if let profiles = config.object("profiles"), !profiles.isEmpty {
@@ -129,9 +159,10 @@ final class FMSessionObject: SharedObject {
           defaultModel: model,
           modelSpec: spec,
           allTools: tools,
-          history: transcript.map { Array($0) } ?? [],
+          history: history,
           sessionId: sessionId,
-          emit: emitProfile
+          emit: emitProfile,
+          historyBroker: historyBroker
         )
         profileNames = profiles.keys.sorted()
         nativeSession = session
@@ -188,6 +219,26 @@ final class FMSessionObject: SharedObject {
     #else
     throw FMBridgeError.unsupportedSDK("transcriptErrorHandling", sdk: "iOS 27")
     #endif
+  }
+
+  /// Context window of the session's model in tokens, or `NSNull` when it cannot be determined.
+  @available(iOS 26.0, *)
+  func contextSize() async -> Any {
+    switch resolvedModel as? FMResolvedModel {
+    case .system(let model):
+      return model.contextSize
+    case .privateCloudCompute(let object):
+      #if compiler(>=6.4)
+      if #available(iOS 27.0, *), let pcc = object as? PrivateCloudComputeLanguageModel, let size = try? await pcc.contextSize {
+        return size
+      }
+      #else
+      _ = object
+      #endif
+      return NSNull()
+    case nil:
+      return NSNull()
+    }
   }
 
   // MARK: - Requests
@@ -284,6 +335,8 @@ final class FMSessionObject: SharedObject {
           "isComplete": snapshot.rawContent.isComplete,
         ])
       }
+      // A cancelled ResponseStream can finish without throwing; never report it as done.
+      try Task.checkCancellation()
       var result = FMSessionObject.baseResult(entries: Array(session.transcript.dropFirst(entryCountBefore)))
       result["json"] = lastJSON
       result["rawContentJSON"] = lastJSON
@@ -325,6 +378,7 @@ final class FMSessionObject: SharedObject {
       lastUsage = FMSessionObject.usage(of: snapshot)
       emitStream(event)
     }
+    try Task.checkCancellation()
     var result = FMSessionObject.baseResult(entries: Array(session.transcript.dropFirst(entryCountBefore)))
     result["text"] = text
     result["usage"] = lastUsage

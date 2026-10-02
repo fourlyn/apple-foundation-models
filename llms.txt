@@ -1,0 +1,26 @@
+# @fourlyn/apple-foundation-models
+
+> React Native / Expo SDK for Apple Foundation Models (Apple Intelligence LLMs): on-device SystemLanguageModel and Private Cloud Compute. TypeScript-first; iOS 26+ (many features iOS 27+); requires an Expo development build or bare React Native with Expo Modules (not Expo Go).
+
+Start with AGENTS.md: a single-file integration guide with install steps, API cheat sheet, OS matrix, pitfalls and error codes.
+
+## Docs
+- [AGENTS.md](AGENTS.md): complete integration guide for AI agents
+- [Getting started](docs/getting-started.md)
+- [Availability](docs/availability.md)
+- [Sessions](docs/sessions.md)
+- [Streaming](docs/streaming.md)
+- [Structured generation](docs/structured-generation.md)
+- [Tools](docs/tools.md)
+- [Multimodal](docs/multimodal.md)
+- [Private Cloud Compute](docs/private-cloud-compute.md)
+- [Dynamic profiles](docs/dynamic-profiles.md)
+- [Transcripts](docs/transcripts.md)
+- [Errors](docs/errors.md)
+- [Expo](docs/expo.md)
+- [React Native](docs/react-native.md)
+- [Advanced](docs/advanced.md)
+- [Vercel AI SDK provider](docs/ai-sdk.md)
+- [Testing](docs/testing.md)
+- [Apple API matrix](docs/apple-api-matrix.md)
+- [Competitive matrix](docs/competitive-matrix.md)

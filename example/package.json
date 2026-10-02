@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
+    "@fourlyn/apple-foundation-models": "file:..",
     "expo": "~57.0.25",
+    "expo-asset": "~57.0.18",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
     "react-native": "0.86.3",
-    "@fourlyn/apple-foundation-models": "file:.."
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",

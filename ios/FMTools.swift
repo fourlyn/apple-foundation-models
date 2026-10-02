@@ -2,8 +2,10 @@ import Foundation
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
-#if canImport(Vision)
+#if canImport(_Vision_FoundationModels)
+// Cross-import overlay that provides Vision's `OCRTool` and `BarcodeReaderTool` (iOS 27 SDK).
 import Vision
+import _Vision_FoundationModels
 #endif
 
 /// The result of a JavaScript tool execution, sent back via `resolveToolCall`.
@@ -198,7 +200,7 @@ enum FMToolFactory {
   private static func makeNativeTool(_ identifier: String, name: String?, description: String?) throws -> any Tool {
     let customName = (name?.isEmpty == false && name != identifier) ? name : nil
     let customDescription = (description?.isEmpty == false) ? description : nil
-    #if compiler(>=6.4) && canImport(Vision)
+    #if compiler(>=6.4) && canImport(_Vision_FoundationModels)
     if #available(iOS 27.0, *) {
       switch identifier {
       case "vision.ocr":
@@ -213,7 +215,16 @@ enum FMToolFactory {
     }
     #else
     if nativeToolIdentifiers.contains(identifier) {
+      #if targetEnvironment(simulator)
+      // Apple ships the Vision tools in the device SDK only.
+      throw FMBridgeError(
+        code: "UNSUPPORTED_PLATFORM",
+        message: "Native tool '\(identifier)' is not available in the iOS Simulator. Run on a device.",
+        details: ["feature": identifier, "reason": "SIMULATOR"]
+      )
+      #else
       throw FMBridgeError.unsupportedSDK("Native tool '\(identifier)'", sdk: "iOS 27")
+      #endif
     }
     #endif
     throw FMBridgeError.invalidArgument("Unknown native tool '\(identifier)'. Available: \(nativeToolIdentifiers.joined(separator: ", ")).")

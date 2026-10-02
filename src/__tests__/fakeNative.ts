@@ -7,7 +7,10 @@ type Listener = (event: any) => void;
  * `respondImpl` / `streamImpl` and can trigger tool calls like the model would.
  */
 export class FakeNative {
-  listeners: Record<string, Set<Listener>> = { onToolCall: new Set(), onStreamEvent: new Set(), onProfileEvent: new Set() };
+  listeners: Record<string, Set<Listener>> = { onToolCall: new Set(), onStreamEvent: new Set(), onProfileEvent: new Set(), onHistoryTransform: new Set() };
+  historyAnswers = new Map<string, string | null>();
+  historyWaiters = new Map<string, (idsJSON: string | null) => void>();
+  transcript: { entries: Record<string, unknown>[]; json: string } = { entries: [], json: '{"entries":[]}' };
   toolResults = new Map<string, { resultJSON: string | null; errorMessage: string | null }>();
   toolWaiters = new Map<string, (value: { resultJSON: string | null; errorMessage: string | null }) => void>();
   cancelled: string[] = [];
@@ -35,6 +38,14 @@ export class FakeNative {
     return result;
   }
 
+  /** Simulates Apple asking a profile's `historyTransform` which entries to keep. */
+  transformHistory(profile: string, entries: Record<string, unknown>[], sessionId = 'session-1') {
+    const transformId = `transform_${Math.random().toString(36).slice(2)}`;
+    const answer = new Promise<string | null>((resolve) => this.historyWaiters.set(transformId, resolve));
+    this.emit('onHistoryTransform', { sessionId, transformId, profile, entries });
+    return answer;
+  }
+
   stream(event: NativeStreamEvent) {
     this.emit('onStreamEvent', event);
   }
@@ -53,10 +64,15 @@ export class FakeNative {
         self.toolWaiters.get(callId)?.({ resultJSON, errorMessage });
         return true;
       },
+      resolveHistoryTransform(transformId, idsJSON) {
+        self.historyAnswers.set(transformId, idsJSON);
+        self.historyWaiters.get(transformId)?.(idsJSON);
+        return true;
+      },
       createNativeSession: () => ({ release: () => void (self.released += 1) }),
       configureSession: async (_handle, config) => {
         self.configs.push(JSON.parse(config));
-        return { ok: true, value: { sessionId: 'session-1', model: 'system' } };
+        return { ok: true, value: { sessionId: 'session-1', model: 'system', contextSize: 4096 } };
       },
       respond: async (_handle, requestId, payload) => {
         const parsed = JSON.parse(payload);
@@ -78,7 +94,8 @@ export class FakeNative {
       },
       prewarm: async () => ({ ok: true, value: true }),
       getSessionState: () => ({ ok: true, value: { isResponding: false, model: 'system', usage: null, profiles: [] } }),
-      getTranscript: async () => ({ ok: true, value: { entries: [], json: '{"entries":[]}' } }),
+      getTranscript: async () => ({ ok: true, value: self.transcript }),
+      getTranscriptSync: () => ({ ok: true, value: self.transcript }),
       setActiveProfile: (_handle, name) => ({ ok: true, value: name }),
       createFeedbackAttachment: async () => ({ ok: true, value: 'aGVsbG8=' }),
       disposeSession: () => void (self.disposed += 1),

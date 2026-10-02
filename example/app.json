@@ -14,7 +14,9 @@
       [
         "@fourlyn/apple-foundation-models",
         {}
-      ]
+      ],
+      "expo-asset",
+      "./plugins/withSceneLifecycle"
     ]
   }
 }

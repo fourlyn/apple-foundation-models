@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # Native unit tests (ios/Tests) through the Swift package at the repo root. No model is needed.
+  swift-tests:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the Swift unit tests on the newest installed iPhone simulator
+        run: |
+          udid="$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          runtimes = json.load(sys.stdin)['devices']
+          ios = sorted((key for key in runtimes if '.SimRuntime.iOS-' in key), key=lambda key: [int(part) for part in key.split('iOS-')[1].split('-')])
+          for key in reversed(ios):
+              phones = [device for device in runtimes[key] if device['name'].startswith('iPhone')]
+              if phones:
+                  print(phones[0]['udid'])
+                  break
+          ")"
+          xcodebuild test -scheme AppleFoundationModelsBridge-Package -destination "platform=iOS Simulator,id=$udid"
+
+  ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts && npm run build
+      - working-directory: example
+        run: npm ci && npx expo prebuild -p ios --no-install
+      - working-directory: example/ios
+        run: pod install
+      - working-directory: example/ios
+        run: >
+          xcodebuild -workspace FoundationModelsLab.xcworkspace -scheme FoundationModelsLab
+          -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO build
