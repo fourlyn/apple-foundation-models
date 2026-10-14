@@ -135,7 +135,7 @@ The example app does not include the AI SDK.
 | --- | --- | --- | --- |
 | G1 | Package contents | `npm pack --dry-run` | Lists `build/ai/index.js`, `src/ai/index.ts` and `docs/`; does **not** list `ios/Tests`, `Package.swift` or `__tests__` |
 | G2 | Version guard | Push a tag that does not match `package.json` (use a fork or a throwaway branch) | The workflow fails at "Check that the tag matches package.json"; nothing is published |
-| G3 | Pre-release | Tag `v0.1.0-beta.1` with matching versions and `NPM_TOKEN` set | Published under npm tag `next`; GitHub release marked pre-release with the changelog section as notes |
+| G3 | Pre-release | Tag `v0.1.0-beta.1` with matching versions and the npm trusted publisher configured | Published under npm tag `next`; GitHub release marked pre-release with the changelog section as notes |
 | G4 | CI | Open a pull request | Jobs `js`, `swift-tests` and `ios` are green |
 
 ## What has been verified

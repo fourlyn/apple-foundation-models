@@ -5,7 +5,9 @@ name: Release
 #   npm version patch   # or minor / major; updates package.json and creates the tag
 #   git push --follow-tags
 #
-# Requires the `NPM_TOKEN` repository secret (an npm automation token with publish access to @fourlyn).
+# Authenticates with npm trusted publishing (OIDC), so no npm token secret is needed. The trusted publisher is
+# configured on npmjs.com: package Settings > Trusted Publisher > GitHub Actions, workflow `release.yml`.
+# A tag whose version is already on npm (e.g. published by hand) skips the publish and still gets a GitHub release.
 
 on:
   push:
@@ -13,7 +15,7 @@ on:
 
 permissions:
   contents: write # create the GitHub release
-  id-token: write # npm provenance
+  id-token: write # npm trusted publishing and provenance
 
 jobs:
   publish:
@@ -22,7 +24,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24 # ships npm 11, which trusted publishing needs (11.5.1+)
           cache: npm
           registry-url: https://registry.npmjs.org
 
@@ -47,13 +49,16 @@ jobs:
       - name: Publish to npm
         # Pre-release versions (1.0.0-beta.1) go to the `next` tag so `npm install` keeps resolving to stable.
         run: |
+          name="$(node -p "require('./package.json').name")"
+          if npm view "$name@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "$name@${GITHUB_REF_NAME#v} is already on npm; skipping publish."
+            exit 0
+          fi
           case "$GITHUB_REF_NAME" in
             *-*) tag=next ;;
             *) tag=latest ;;
           esac
           npm publish --access public --provenance --tag "$tag" --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Extract release notes from CHANGELOG.md
         run: |

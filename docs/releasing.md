@@ -4,8 +4,9 @@ Releases are published by GitHub Actions (`.github/workflows/release.yml`) when 
 
 ## One-time setup
 
-1. Create an npm **automation** token with publish access to the `@fourlyn` scope.
-2. Add it to the GitHub repository as the secret `NPM_TOKEN` (Settings → Secrets and variables → Actions).
+The workflow uses npm [trusted publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so there is no
+npm token to create or rotate. On npmjs.com, open the package → **Settings** → **Trusted Publisher** →
+**GitHub Actions** and enter owner `fourlyn`, repository `apple-foundation-models`, workflow `release.yml`.
 
 ## Cut a release
 
@@ -28,7 +29,7 @@ Releases are published by GitHub Actions (`.github/workflows/release.yml`) when 
 | --- | --- |
 | Version check | the tag, `package.json` and `PACKAGE_VERSION` disagree |
 | `npm run typecheck`, `npm test`, `npm run build` | anything fails |
-| `npm publish --access public --provenance` | the token is missing or the version already exists |
+| `npm publish --access public --provenance` | the trusted publisher is not configured (skipped if the version is already on npm) |
 | GitHub release | — (notes come from `CHANGELOG.md`) |
 
 Pre-release versions (anything with a `-`, such as `1.0.0-beta.1`) are published under the npm tag `next` and
