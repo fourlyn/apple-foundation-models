@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.1.1 — 2026-10-15
+
+### Fixed
+- iOS: compile with the Xcode 26 SDK. 0.1.0 only built with Xcode 27 because it used the iOS 27 names
+  `GenerationOptions(samplingMode:)` and `Transcript.StructuredSegment.schemaName`.
+
 ## 0.1.0 — 2026-10-15
 
 First developer preview.
