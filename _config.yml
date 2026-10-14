@@ -27,3 +27,6 @@ exclude:
   - tsconfig*.json
   - expo-module.config.json
   - app.plugin.js
+# Rendered as <meta name="google-site-verification"> by jekyll-seo-tag (Search Console ownership).
+webmaster_verifications:
+  google: eEgGBzst2b30GhrCKU72SazzBrz7JBwvOSdqorf6egI
