@@ -65,7 +65,7 @@
   "bugs": {
     "url": "https://github.com/fourlyn/apple-foundation-models/issues"
   },
-  "homepage": "https://github.com/fourlyn/apple-foundation-models#readme",
+  "homepage": "https://fourlyn.github.io/apple-foundation-models/",
   "author": "Fourlyn",
   "license": "MIT",
   "peerDependencies": {
