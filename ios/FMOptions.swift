@@ -96,11 +96,20 @@ struct FMRequest {
 enum FMOptionsParser {
   @available(iOS 26.0, *)
   static func generationOptions(_ object: [String: Any]) throws -> GenerationOptions {
+    // Xcode 27 SDK renamed `sampling:` to `samplingMode:` (the old label is deprecated there, the new one is missing before).
+    #if compiler(>=6.4)
     var options = GenerationOptions(
       samplingMode: try samplingMode(object.object("samplingMode")),
       temperature: object.double("temperature"),
       maximumResponseTokens: object.int("maximumResponseTokens")
     )
+    #else
+    var options = GenerationOptions(
+      sampling: try samplingMode(object.object("samplingMode")),
+      temperature: object.double("temperature"),
+      maximumResponseTokens: object.int("maximumResponseTokens")
+    )
+    #endif
     if let mode = object.string("toolCallingMode") {
       #if compiler(>=6.4)
       if #available(iOS 27.0, *) {

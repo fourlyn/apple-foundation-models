@@ -101,10 +101,16 @@ enum FMTranscriptConverter {
     case .text(let text):
       return ["id": text.id, "type": "text", "text": text.content]
     case .structure(let structure):
+      // Xcode 27 SDK renamed `source` to `schemaName`.
+      #if compiler(>=6.4)
+      let schemaName = structure.schemaName
+      #else
+      let schemaName = structure.source
+      #endif
       return [
         "id": structure.id,
         "type": "structure",
-        "schemaName": structure.schemaName,
+        "schemaName": schemaName,
         "contentJSON": structure.content.jsonString,
       ]
     default:
