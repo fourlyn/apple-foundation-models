@@ -1,0 +1,29 @@
+# GitHub Pages site: https://fourlyn.github.io/apple-foundation-models/
+# Built by GitHub's Jekyll from README.md (home page), AGENTS.md and docs/.
+title: Apple Foundation Models for React Native & Expo
+description: TypeScript/Expo SDK for Apple Foundation Models. On-device Apple Intelligence LLMs in React Native with streaming, structured output, tool calling and Private Cloud Compute.
+theme: jekyll-theme-cayman
+plugins:
+  - jekyll-relative-links
+  - jekyll-optional-front-matter
+  - jekyll-readme-index
+  - jekyll-titles-from-headings
+  - jekyll-sitemap
+relative_links:
+  enabled: true
+  collections: false
+exclude:
+  - example
+  - ios
+  - src
+  - plugin
+  - test-stubs
+  - build
+  - node_modules
+  - prd.md
+  - package.json
+  - package-lock.json
+  - Package.swift
+  - tsconfig*.json
+  - expo-module.config.json
+  - app.plugin.js
