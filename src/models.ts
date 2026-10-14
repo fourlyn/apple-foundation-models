@@ -16,7 +16,7 @@ import type {
   TokenCountInput,
 } from './types';
 
-export const PACKAGE_VERSION = '0.1.0';
+export const PACKAGE_VERSION = '0.1.1';
 
 function modelJSON(model: ModelSelector | undefined): string | null {
   return model === undefined ? null : JSON.stringify(model);

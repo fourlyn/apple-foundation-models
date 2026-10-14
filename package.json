@@ -1,6 +1,6 @@
 {
   "name": "@fourlyn/apple-foundation-models",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "The complete TypeScript/Expo SDK for Apple Foundation Models: on-device and Private Cloud Compute LLMs, streaming, structured output, tools, images, dynamic profiles and transcripts.",
   "main": "build/index.js",
   "types": "build/index.d.ts",
